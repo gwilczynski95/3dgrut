@@ -15,7 +15,9 @@
 
 import os
 from collections import defaultdict
+import json
 from pathlib import Path
+import time
 from typing import Any, Optional, Union
 
 import numpy as np
@@ -616,23 +618,26 @@ class Trainer3DGRUT:
             self.model.export_ply(ply_path)
 
         # Evaluate on test set
-        if conf.test_last:
-            logger.log_rule("Evaluation on Test Set")
+        # if conf.test_last:
+        logger.log_rule("Evaluation on Test Set")
 
-            self.teardown_dataloaders()
-            self.save_checkpoint(last_checkpoint=True)
+        self.teardown_dataloaders()
+        self.save_checkpoint(last_checkpoint=True)
 
-            # Renderer test split
-            renderer = Renderer.from_preloaded_model(
-                model=self.model,
-                out_dir=out_dir,
-                path=conf.path,
-                save_gt=False,
-                writer=self.tracking.writer,
-                global_step=self.global_step,
-                compute_extra_metrics=conf.compute_extra_metrics,
-            )
-            renderer.render_all()
+        # Renderer test split
+        renderer = Renderer.from_preloaded_model(
+            model=self.model,
+            out_dir=out_dir,
+            path=conf.path,
+            save_gt=False,
+            writer=self.tracking.writer,
+            global_step=self.global_step,
+            compute_extra_metrics=conf.compute_extra_metrics,
+        )
+        mean_psnr, std_psnr, mean_inference_time = renderer.render_all()
+        
+        return mean_inference_time
+        
 
     @torch.cuda.nvtx.range(f"save_checkpoint")
     def save_checkpoint(self, last_checkpoint: bool = False):
@@ -856,9 +861,11 @@ class Trainer3DGRUT:
         # Training loop
         logger.start_progress(task_name="Training", total_steps=conf.n_iterations, color="spring_green1")
 
+        time_start = time.time()
         for epoch_idx in range(self.n_epochs):
             self.run_train_pass(conf)
-
+        training_time = time.time() - time_start
+        
         logger.end_progress(task_name="Training")
 
         # Report training statistics
@@ -872,7 +879,16 @@ class Trainer3DGRUT:
         logger.log_table(f"🎊 Training Statistics", record=table)
 
         # Perform testing
-        self.on_training_end()
+        mean_inference_time = self.on_training_end()
+        
+        with open(os.path.join(self.tracking.output_dir, "train_time_fps.json"), "w") as f:
+            json.dump(
+                {
+                    "FPS": 1 / mean_inference_time,
+                    "training_time": training_time, 
+                },
+                f,
+            )
         logger.info(f"🥳 Training Complete.")
 
         # Updating the GUI
